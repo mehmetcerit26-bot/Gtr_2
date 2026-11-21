@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0a1220">
+<title>Gladiator Tablet v11 · CRT Otomasyon</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-512.png">
+<link rel="apple-touch-icon" href="icon-512.png">
+<!--
+  Gladiator GTR Power Max  ->  Tablet (Chrome, Web Serial over Bluetooth)
+  CRT Otomasyon · 21.11.2026 · v11
+  v11: SKALA: FARK (zemin = cekimin medyani, sadece fark renklenir, aralik ayarlanir),
+       sicrama filtresi (komsularindan 60+ farkli tek nokta gri X, hesaplara girmez),
+       GTR enterpolasyonlu .g3d (yarim adimli) dogru acilir, .g3d'nin zikzak bilgisi dosyadan alinir
+  v10: internetsiz calisma (PWA): sw.js + manifest.json + icon-512.png, ana ekrana eklenebilir
+  v9: CSV acma (DOSYA AC .g3d + .csv), Bluetooth kopunca otomatik yeniden baglanma
+  v8: 3D baslangic yonu GTR gorunumuyle ayni (sira 1 sagda, adim 1 onde), 4 kose etiketi
+  v7: 3D basamakli (GTR gibi: her sira duz bir basamak, siralar arasi dik gecis)
+  v6: 3D gorunum (parmakla dondur, iki parmakla yakinlastir, yukseklik abartma)
+  v5: GTR gorunumunde GTR renk skalasi, genis cizim, basamakli sira gecisi
+  v4: GTR gorunumu GTR yonunde (sira 1 sagda, adim 1 altta), derinlik cm/m
+  v3: dikey ekran duzeni, .g3d kaydet/ac (GTR uyumlu), izgarada dokun -> derinlik tahmini
+
+  KULLANIM:
+   1) Tablet Ayarlar > Bluetooth: GTR_POWERMAX ile esles (sifre 1234)
+   2) ESP32 kutusu ve laptop BlueSoleil KAPALI olsun (cihaz tek baglanti kabul eder)
+   3) Bu sayfayi Chrome'da https adresinden ac (GitHub Pages)
+   4) BAGLAN > listeden GTR_POWERMAX sec
+   5) Cihazda Metal Bosluk > mavi tus, sondayi gezdir
+
+  PROTOKOL: her satir bir sayi "123\r\n" (0..255), her deger 4 kez tekrar eder,
+  canli akista ~0.55 sn'de bir yeni deger. Cekim basi isareti: 18,229,149,64,218
+-->
+<style>
+  :root{
+    --bg:#0a1220; --panel:#13243a; --line:#1e3a52; --text:#d8e8f2; --dim:#6f8ba3;
+    --cyan:#3fd7e0; --green:#3fd17a; --amber:#e8a13a; --red:#e0555f; --yellow:#ffe14a;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent; user-select:none}
+  html,body{margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden}
+  #app{display:flex; flex-direction:column; height:100vh; height:100dvh}
+  header{display:flex; align-items:center; gap:14px; padding:8px 12px; background:var(--panel);
+    border-bottom:1px solid var(--line); flex:0 0 auto}
+  .dot{width:16px; height:16px; border-radius:50%; background:var(--red); box-shadow:0 0 8px currentColor; flex:0 0 auto}
+  .dot.on{background:var(--green)}
+  .val{font-size:clamp(15px,2.2vw,22px); font-weight:700; min-width:80px}
+  .val small{font-size:13px; color:var(--dim); font-weight:500; margin-right:4px}
+  .adim{font-size:clamp(20px,4.2vw,38px); font-weight:800; color:var(--yellow); letter-spacing:1px; flex:1; text-align:center; white-space:nowrap}
+  .adim span{color:var(--text); font-size:.8em; margin-left:.5em}
+  .cekim{font-size:18px; color:var(--dim); min-width:60px; text-align:right}
+  .btn{background:#21324a; color:var(--text); border:1px solid var(--line); border-radius:10px;
+    font-size:clamp(14px,1.8vw,18px); font-weight:700; padding:10px 14px; cursor:pointer; white-space:nowrap}
+  .btn:active{background:#3a5272}
+  .btn.ana{background:#1c6b4a; border-color:#2f9a6c}
+  .btn.kirmizi{background:#7a2a30; border-color:#a5434b}
+  #graf{flex:0 0 30%; position:relative; border-bottom:1px solid var(--line)}
+  #izg{flex:1 1 auto; position:relative}
+  #cIzg{touch-action:none}
+  canvas{position:absolute; inset:0; width:100%; height:100%; display:block}
+  footer{display:grid; grid-template-columns:repeat(auto-fit,minmax(104px,1fr)); gap:6px; padding:6px; background:var(--panel); border-top:1px solid var(--line); flex:0 0 auto}
+  footer .btn{font-size:clamp(12px,1.6vw,16px); padding:12px 2px}
+  @media (orientation:portrait){ #graf{flex-basis:24%} }
+  #cProfil{position:static; width:100%; height:260px; background:#0a1220; border-radius:10px; margin:8px 0}
+  #mDerin .kutu{width:min(760px,96vw)}
+  #derinSonuc{font-size:clamp(18px,3vw,26px); font-weight:800; color:var(--yellow); margin:6px 0}
+  #derinDetay{font-size:15px; color:var(--text); line-height:1.5}
+  #mesaj{position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); background:rgba(19,36,58,.95);
+    border:2px solid var(--green); color:var(--green); padding:12px 26px; border-radius:12px; font-size:22px; font-weight:700;
+    pointer-events:none; opacity:0; transition:opacity .3s; white-space:nowrap; z-index:5}
+  #mesaj.goster{opacity:1}
+  .modal{position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:10}
+  .modal.acik{display:flex}
+  .kutu{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:18px; width:min(420px,92vw)}
+  .kutu h3{margin:0 0 10px; font-size:20px}
+  #tusEkran{font-size:44px; font-weight:800; text-align:center; background:#0a1220; border-radius:10px; padding:10px; margin-bottom:12px; color:var(--yellow); min-height:70px}
+  .tuslar{display:grid; grid-template-columns:repeat(3,1fr); gap:10px}
+  .tuslar .btn{font-size:28px; padding:16px 0}
+  .bilgi{font-size:14px; color:var(--dim); margin-top:10px; line-height:1.4}
+  .ayar{display:flex; align-items:center; justify-content:space-between; margin:10px 0; font-size:17px}
+  .ayar input{width:90px; font-size:20px; padding:6px; border-radius:8px; border:1px solid var(--line); background:#0a1220; color:var(--text); text-align:center}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="dot" id="dot"></div>
+    <button class="btn ana" id="bBaglan">BAĞLAN</button>
+    <div class="val"><small>DEĞER</small><span id="vDeger">---</span></div>
+    <div class="adim" id="vAdim">ADIM 0/20<span>S:1</span></div>
+    <div class="cekim" id="vCekim">Ç#0</div>
+    <button class="btn" id="bAyar">⚙</button>
+  </header>
+  <div id="graf"><canvas id="cGraf"></canvas><div id="mesaj"></div></div>
+  <div id="izg"><canvas id="cIzg"></canvas>
+    <div id="uc3d" style="position:absolute; right:8px; top:8px; display:none; gap:6px; z-index:3">
+      <button class="btn" id="u3Az">YÜKSEKLİK −</button><button class="btn" id="u3Cok">YÜKSEKLİK +</button><button class="btn" id="u3Sifir">SIFIRLA</button>
+    </div></div>
+  <footer>
+    <button class="btn kirmizi" id="bTemizle">TEMİZLE</button>
+    <button class="btn" id="bSira">SIRA ›</button>
+    <button class="btn" id="bAdim">ADIM: 20</button>
+    <button class="btn" id="bZik">ZİKZAK</button>
+    <button class="btn" id="bSkala">SKALA: SABİT</button>
+    <button class="btn" id="bGorunum">GÖR: IZGARA</button>
+    <button class="btn" id="bSes">SES: AÇIK</button>
+    <button class="btn" id="bKaydet">CSV KAYDET</button>
+    <button class="btn" id="bG3d">G3D KAYDET</button>
+    <button class="btn" id="bAc">DOSYA AÇ</button>
+    <input type="file" id="dosyaSec" accept=".g3d,.csv" style="display:none">
+  </footer>
+</div>
+
+<!-- Adim tus takimi -->
+<div class="modal" id="mAdim">
+  <div class="kutu">
+    <h3>Adım sayısı (2–120)</h3>
+    <div id="tusEkran">20</div>
+    <div class="tuslar" id="tuslar"></div>
+    <div class="bilgi">Canlı modda her değer ~0,55 sn'de gelir.<br>Örnek: 20 adım ≈ 11 sn, 100 adım ≈ 55 sn bir sıra.<br>Adım değişince ızgara temizlenir.</div>
+  </div>
+</div>
+
+<!-- Derinlik tahmini -->
+<div class="modal" id="mDerin">
+  <div class="kutu">
+    <h3>Derinlik tahmini</h3>
+    <div id="derinSonuc">-</div>
+    <canvas id="cProfil"></canvas>
+    <div id="derinDetay"></div>
+    <div class="bilgi">Yöntem: yarım genişlik kuralı. Anomalinin yarı yüksekliğindeki genişliğe (FWHM) bakılır;
+      küresel cisim için derinlik ≈ 0,65 × FWHM, boru/hat gibi uzun cisim için ≈ 0,5 × FWHM.
+      Cihaz derinlik ölçmez; bu sadece anomali şeklinden yapılan kaba bir tahmindir.</div>
+    <div style="display:flex; gap:10px; margin-top:12px"><button class="btn ana" style="flex:1" id="dKapat">KAPAT</button></div>
+  </div>
+</div>
+
+<!-- Ayarlar -->
+<div class="modal" id="mAyar">
+  <div class="kutu">
+    <h3>Ayarlar</h3>
+    <div class="ayar">Boşluk eşiği (bu ve altı)<input id="aBos" type="number" min="0" max="100"></div>
+    <div class="ayar">Metal eşiği (bu ve üstü)<input id="aMet" type="number" min="150" max="255"></div>
+    <div class="ayar">Adım aralığı (cm)<input id="aAdimCm" type="number" min="5" max="300"></div>
+    <div class="ayar">Sıra aralığı (cm)<input id="aSiraCm" type="number" min="5" max="300"></div>
+    <div class="ayar">FARK skalası aralığı (±)<input id="aFark" type="number" min="3" max="120"></div>
+    <div class="ayar">Sıçrama filtresi (tek nokta)<button class="btn" id="aFiltre">AÇIK</button></div>
+    <div class="ayar">Her adımda tık sesi<button class="btn" id="aTik">AÇIK</button></div>
+    <div class="ayar">Deneme verisi (cihazsız test)<button class="btn" id="aDemo">DEMO BAŞLAT</button></div>
+    <div style="display:flex; gap:10px; margin-top:14px">
+      <button class="btn ana" style="flex:1" id="aTamam">TAMAM</button>
+    </div>
+    <div class="bilgi">Gladiator Tablet v11 · CRT Otomasyon<br>Chrome (Android 137+) Web Serial · Bluetooth SPP<br>İnternetsiz çalışma: <b id="cevrimdisi">kontrol ediliyor...</b></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+// ======================= AYARLAR / DURUM =======================
+const ISARET = [18, 229, 149, 64, 218];
+const YER = (() => { try { return JSON.parse(localStorage.getItem("gladiator_ayar") || "{}"); } catch (e) { return {}; } })();
+const S = {
+  adimSayisi: YER.adimSayisi || 20,
+  zikzak: YER.zikzak !== undefined ? YER.zikzak : true,
+  skala: YER.skala || (YER.skalaOto ? "oto" : "sabit"),   // sabit / oto / fark
+  farkAralik: YER.farkAralik || 20,
+  filtre: YER.filtre !== undefined ? YER.filtre : true,
+  gtrGorunum: !!YER.gtrGorunum,
+  uc: !!YER.uc,
+  ses: YER.ses !== undefined ? YER.ses : true,
+  tik: YER.tik !== undefined ? YER.tik : true,
+  bosEsik: YER.bosEsik !== undefined ? YER.bosEsik : 5,
+  metEsik: YER.metEsik !== undefined ? YER.metEsik : 250,
+  adimCm: YER.adimCm || 40,
+  siraCm: YER.siraCm || 40,
+};
+let secim = null;          // derinlik icin secilen hucre {r, c}
+let duzen = null;          // son cizimin yerlesimi (dokunma -> hucre)
+function ayarKaydet() {
+  try { localStorage.setItem("gladiator_ayar", JSON.stringify(S)); } catch (e) {}
+}
+
+let siralar = [[]];      // cekimin tum siralari: siralar[r][adim] = deger (gelis sirasina gore)
+let grafik = [];         // son degerler
+const GR_N = 300;
+let cekimNo = 0, sonDeger = -1, toplam = 0, sayi = 0;
+let bosVar = false, metalVar = false;
+let bagli = false, port = null, okuyucu = null, demoTimer = null;
+
+// ======================= RENK =======================
+function ara(a, b, t) { return [0,1,2].map(i => Math.round(a[i] + (b[i] - a[i]) * t)); }
+function renkSabit(v) {
+  v = Math.max(0, Math.min(255, v));
+  if (v < 75)  return ara([0,0,140],   [0,200,255], v / 75);
+  if (v < 150) return ara([0,200,255], [0,210,0],   (v - 75) / 75);
+  if (v < 200) return ara([0,210,0],   [255,230,0], (v - 150) / 50);
+  return             ara([255,230,0],  [230,0,0],   (v - 200) / 55);
+}
+// GTR renk skalasi (ev1/ev2 cekimi GTR ekrani ile karsilastirilarak)
+const GTR_DURAK = [[0,[40,90,230]],[60,[60,160,240]],[105,[0,220,235]],[150,[0,205,90]],[238,[0,195,0]],[249,[245,225,0]],[255,[245,150,0]]];
+function renkGtr(v) {
+  v = Math.max(0, Math.min(255, v));
+  for (let i = 1; i < GTR_DURAK.length; i++) {
+    const [v1, c1] = GTR_DURAK[i - 1], [v2, c2] = GTR_DURAK[i];
+    if (v <= v2) return ara(c1, c2, (v - v1) / (v2 - v1));
+  }
+  return GTR_DURAK[GTR_DURAK.length - 1][1];
+}
+function palet(v) { return S.gtrGorunum ? renkGtr(v) : renkSabit(v); }
+// FARK skalasi: zeminin altı mavi, zemin yesil, ustu sari/kirmizi
+const FARK_DURAK = [[-1, [30, 60, 220]], [-0.5, [0, 190, 235]], [0, [0, 185, 80]], [0.5, [250, 225, 0]], [1, [230, 30, 0]]];
+function renkFark(d) {
+  const t = Math.max(-1, Math.min(1, d / S.farkAralik));
+  for (let i = 1; i < FARK_DURAK.length; i++) {
+    const [t1, c1] = FARK_DURAK[i - 1], [t2, c2] = FARK_DURAK[i];
+    if (t <= t2) return ara(c1, c2, (t - t1) / (t2 - t1));
+  }
+  return FARK_DURAK[FARK_DURAK.length - 1][1];
+}
+function renkDizi(v) {
+  if (S.skala === "fark" && zeminSay > 3) return renkFark(v - zemin);
+  if (S.skala === "oto" && zeminSay > 3) {
+    let v2 = 150 + (v - zemin) * 1.5;
+    if (v <= S.bosEsik) v2 = 0;
+    if (v >= S.metEsik) v2 = 255;
+    return palet(v2);
+  }
+  return palet(v);
+}
+const renk = v => { const c = renkDizi(v); return `rgb(${c[0]},${c[1]},${c[2]})`; };
+
+// ======================= SES (WebAudio) =======================
+let ac = null, sesMesgulBitis = 0;
+function sesHazirla() { if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } if (ac && ac.state === "suspended") ac.resume(); }
+function bip(frek, sure, bas, tip = "square", vol = 0.25) {
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.type = tip; o.frequency.value = frek;
+  g.gain.setValueAtTime(0, bas);
+  g.gain.linearRampToValueAtTime(vol, bas + 0.005);
+  g.gain.setValueAtTime(vol, bas + sure - 0.01);
+  g.gain.linearRampToValueAtTime(0, bas + sure);
+  o.connect(g).connect(ac.destination);
+  o.start(bas); o.stop(bas + sure + 0.02);
+}
+// desen: [frek, sure_ms, bosluk_ms] ...
+const DESEN = {
+  tik:    [[1800, 18, 0]],
+  sira:   [[880, 250, 120], [880, 250, 0]],
+  bosluk: [[200, 420, 250], [200, 420, 250], [200, 420, 0]],
+  metal:  [[2600, 60, 45], [2600, 60, 45], [2600, 60, 45], [2600, 60, 45], [2600, 60, 45], [2600, 60, 0]],
+  basla:  [[1200, 100, 80], [1600, 120, 0]],
+};
+function sesCal(ad, oncelikli) {
+  if (!S.ses || !ac) return;
+  const simdi = ac.currentTime;
+  if (!oncelikli && simdi < sesMesgulBitis) return;   // onemli ses calarken tik atlanir
+  let t = simdi + 0.01;
+  const tip = ad === "bosluk" ? "sine" : "square";
+  for (const [f, s, b] of DESEN[ad]) { bip(f, s / 1000, t, tip, ad === "bosluk" ? 0.5 : 0.25); t += (s + b) / 1000; }
+  if (oncelikli) sesMesgulBitis = t;
+}
+
+// ======================= EKRAN KILIDI =======================
+let wakeLock = null;
+async function ekranAcikTut() {
+  try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && (bagli || demoTimer)) ekranAcikTut(); });
+
+// ======================= CIZIM =======================
+const cG = document.getElementById("cGraf"), cI = document.getElementById("cIzg");
+const gG = cG.getContext("2d"), gI = cI.getContext("2d");
+function boyutla(c, g) {
+  const r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  c.width = Math.round(r.width * d); c.height = Math.round(r.height * d);
+  g.setTransform(d, 0, 0, d, 0, 0);
+  return [r.width, r.height];
+}
+let GW = 0, GH = 0, IW = 0, IH = 0;
+function hepsiniBoyutla() { [GW, GH] = boyutla(cG, gG); [IW, IH] = boyutla(cI, gI); grafikCiz(); izgaraCiz(); }
+window.addEventListener("resize", () => setTimeout(hepsiniBoyutla, 100));
+
+// ======================= SICRAMA FILTRESI + ZEMIN =======================
+// Sicrama: sira icindeki komsularindan 60'tan fazla farkli olan TEK nokta
+// (iki komsu varsa onlar birbirine yakin olmali). Gercek bir cisim en az 2-3 adima yayilir;
+// tek noktalik sert dusus/yukselis sonda hareketi hatasidir (sira basi/sonu, kaldirma, donme).
+// Filtre aciksa: izgarada gri + X, zemin/3D/derinlik hesabinda komsularin ortalamasi kullanilir.
+const SICRAMA_FARK = 60;
+let temizSir = [[]], sicrama = [[]], zemin = 150, zeminSay = 0;
+const medyanAl = d => { if (!d.length) return 150; const b = d.slice().sort((x, y) => x - y), m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; };
+function veriYenile() {
+  temizSir = []; sicrama = [];
+  const hepsi = [];
+  // komsular zemine yakin olmali: komsu da zeminden uzaklasiyorsa bu bir egim (gercek anomali), sicrama degil
+  const z0 = medyanAl(siralar.flat());
+  for (const sira of siralar) {
+    const t = sira.slice(), f = sira.map(() => false);
+    if (S.filtre) for (let a = 0; a < sira.length; a++) {
+      const v = sira[a];
+      const kom = [sira[a - 1], sira[a + 1]].filter(k => k !== undefined);
+      if (!kom.length) continue;
+      const uyumlu = (kom.length < 2 || Math.abs(kom[0] - kom[1]) < 40) && kom.every(k => Math.abs(k - z0) < 25);
+      if (uyumlu && kom.every(k => Math.abs(k - v) > SICRAMA_FARK)) {
+        f[a] = true; t[a] = Math.round(kom.reduce((s, k) => s + k, 0) / kom.length);
+      }
+    }
+    sira.forEach((v, a) => { if (!f[a]) hepsi.push(v); });
+    temizSir.push(t); sicrama.push(f);
+  }
+  zeminSay = hepsi.length;
+  if (zeminSay) { hepsi.sort((x, y) => x - y); const m = zeminSay >> 1; zemin = zeminSay % 2 ? hepsi[m] : (hepsi[m - 1] + hepsi[m]) / 2; }
+}
+// X isareti (sicrama hucresi)
+function sicramaCiz(g, x, y, w, h) {
+  g.fillStyle = "#3a4656"; g.fillRect(x, y, Math.ceil(w), Math.ceil(h));
+  g.strokeStyle = "#c8d4e0"; g.lineWidth = 2; g.beginPath();
+  g.moveTo(x + 4, y + 4); g.lineTo(x + w - 4, y + h - 4); g.moveTo(x + w - 4, y + 4); g.lineTo(x + 4, y + h - 4); g.stroke(); g.lineWidth = 1;
+}
+
+function grafikCiz() {
+  veriYenile();
+  const g = gG, W = GW, H = GH, pad = 6;
+  g.fillStyle = "#0a1220"; g.fillRect(0, 0, W, H);
+  const y = v => H - pad - (Math.max(0, Math.min(255, v)) / 255) * (H - 2 * pad);
+  // esik bantlari
+  g.fillStyle = "rgba(0,80,200,.12)"; g.fillRect(0, y(S.bosEsik), W, y(0) - y(S.bosEsik) + pad);
+  g.fillStyle = "rgba(230,0,0,.12)";  g.fillRect(0, pad - 1, W, y(S.metEsik) - pad + 1);
+  g.strokeStyle = "#1e3a52"; g.lineWidth = 1; g.setLineDash([4, 6]);
+  g.font = "12px system-ui"; g.fillStyle = "#6f8ba3";
+  for (const v of [0, 64, 128, 192, 255]) { g.beginPath(); g.moveTo(30, y(v)); g.lineTo(W, y(v)); g.stroke(); g.fillText(v, 4, y(v) + 4); }
+  g.setLineDash([]);
+  if (S.skala !== "sabit" && zeminSay > 3) {
+    if (S.skala === "fark") {   // zemin ± aralik bandi
+      g.fillStyle = "rgba(63,209,122,.10)";
+      g.fillRect(0, y(zemin + S.farkAralik), W, y(zemin - S.farkAralik) - y(zemin + S.farkAralik));
+    }
+    g.strokeStyle = "rgba(63,209,122,.8)"; g.lineWidth = 2; g.beginPath(); g.moveTo(30, y(zemin)); g.lineTo(W, y(zemin)); g.stroke(); g.lineWidth = 1;
+    g.fillStyle = "#3fd17a"; g.fillText("zemin " + Math.round(zemin), W - 74, y(zemin) - 4);
+  }
+  if (grafik.length < 2) return;
+  // soldan baslar, dolunca kayar
+  const n = Math.max(grafik.length, 60);
+  const dx = (W - 34) / (Math.min(n, GR_N) - 1);
+  g.lineWidth = 3; g.lineJoin = "round";
+  for (let i = 1; i < grafik.length; i++) {
+    g.strokeStyle = renk(grafik[i]);
+    g.beginPath(); g.moveTo(32 + (i - 1) * dx, y(grafik[i - 1])); g.lineTo(32 + i * dx, y(grafik[i])); g.stroke();
+  }
+  const sx = 32 + (grafik.length - 1) * dx, sy = y(grafik[grafik.length - 1]);
+  g.fillStyle = "#fff"; g.beginPath(); g.arc(sx, sy, 5, 0, 7); g.fill();
+}
+
+// Siradaki adim -> ekrandaki sutun (zikzakta tek siralar ters)
+function sutun(r, a) { return (S.zikzak && r % 2 === 1) ? (S.adimSayisi - 1 - a) : a; }
+
+function izgaraCiz() {
+  veriYenile();
+  const g = gI, W = IW, H = IH;
+  g.fillStyle = "#0a1220"; g.fillRect(0, 0, W, H);
+  const A = S.adimSayisi;
+  // dolu sira sayisi (son sira bossa sayma)
+  const R = siralar.length - (siralar[siralar.length - 1].length === 0 ? 1 : 0);
+  if (S.uc) return ucCiz(g, W, H, A, Math.max(R, 1));
+  if (S.gtrGorunum) return gtrCiz(g, W, H, A, Math.max(R, 1));
+
+  const minH = 14;
+  const gorunen = Math.max(1, Math.floor(H / minH));
+  const bas = Math.max(0, siralar.length - gorunen);
+  const satirSay = Math.max(8, Math.min(gorunen, siralar.length));
+  const cw = W / A, ch = H / satirSay;
+  duzen = { mod: "izgara", bas, satirSay, ch, cw, A };
+  for (let r = 0; r < satirSay; r++) {
+    const sr = bas + r, sira = siralar[sr] || [];
+    for (let c = 0; c < A; c++) {
+      const x = c * cw, yy = r * ch;
+      g.strokeStyle = "#16263a"; g.strokeRect(x + .5, yy + .5, cw - 1, ch - 1);
+    }
+    for (let a = 0; a < sira.length; a++) {
+      const v = sira[a], c = sutun(sr, a), x = c * cw, yy = r * ch;
+      if (sicrama[sr] && sicrama[sr][a]) { sicramaCiz(g, x, yy, cw, ch); continue; }
+      g.fillStyle = renk(v); g.fillRect(x, yy, Math.ceil(cw), Math.ceil(ch));
+      if (v <= S.bosEsik || v >= S.metEsik) {
+        g.strokeStyle = "#fff"; g.lineWidth = 2; g.strokeRect(x + 2, yy + 2, cw - 4, ch - 4); g.lineWidth = 1;
+      }
+    }
+    // sira numarasi
+    if (cw > 10 && sira.length) { g.fillStyle = "rgba(0,0,0,.55)"; g.font = "11px system-ui"; g.fillText(sr + 1, 3, r * ch + 12); }
+  }
+  // derinlik icin secilen hucre
+  if (secim && secim.r >= bas && secim.r < bas + satirSay) {
+    const x = secim.c * cw, yy = (secim.r - bas) * ch;
+    g.strokeStyle = "#ffffff"; g.lineWidth = 4; g.strokeRect(x + 2, yy + 2, cw - 4, ch - 4);
+    g.strokeStyle = "#000"; g.lineWidth = 1; g.strokeRect(x + 5, yy + 5, cw - 10, ch - 10);
+  }
+  // aktif hucre cercevesi
+  const sonR = siralar.length - 1 - bas, sonA = siralar[siralar.length - 1].length;
+  if (sonA < A && sonR < satirSay) {
+    const x = sutun(siralar.length - 1, sonA) * cw;
+    g.strokeStyle = "#ffe14a"; g.lineWidth = 2; g.strokeRect(x + 1, sonR * ch + 1, cw - 2, ch - 2); g.lineWidth = 1;
+  }
+}
+
+// GTR gorunumu: siralar dikey sutun, adimlar yukaridan asagi, yumusatilmis
+function gtrCiz(g, W, H, A, R) {
+  const off = document.createElement("canvas");
+  const KX = 4, KY = 3;                      // GTR gibi: her sira 4 sutun -> siralar arasi basamakli gecis
+  off.width = R * KX; off.height = A * KY;
+  const og = off.getContext("2d"), img = og.createImageData(R * KX, A * KY);
+  const yaz = (r, a, c) => {
+    for (let dy = 0; dy < KY; dy++) for (let dx = 0; dx < KX; dx++) {
+      const p = (((A - 1 - a) * KY + dy) * R * KX + (R - 1 - r) * KX + dx) * 4;   // sira 1 sagda, adim 1 altta
+      img.data[p] = c[0]; img.data[p + 1] = c[1]; img.data[p + 2] = c[2]; img.data[p + 3] = 255;
+    }
+  };
+  for (let r = 0; r < R; r++) {
+    const sira = temizSir[r] || [];   // sicramalar komsu ortalamasiyla doldurulmus
+    for (let a = 0; a < A; a++) {
+      // fiziksel konum: zikzakta tek siralarin adimlari ters
+      const idx = (S.zikzak && r % 2 === 1) ? (A - 1 - a) : a;
+      let v = sira[idx];
+      yaz(r, a, v === undefined ? [10, 18, 32] : renkDizi(v));
+    }
+  }
+  og.putImageData(img, 0, 0);
+  // ortalanmis, en-boy orani makul
+  const hedefW = W - 40, hedefH = H - 24;    // GTR gibi genis cizim
+  const x0 = (W - hedefW) / 2;
+  g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high";
+  g.drawImage(off, x0, 10, hedefW, hedefH);
+  duzen = { mod: "gtr", x0, y0: 10, w: hedefW, h: hedefH, R, A };
+  if (secim && secim.r < R) {
+    const cx = x0 + (R - 1 - secim.r + .5) * hedefW / R, cy = 10 + (A - 1 - secim.c + .5) * hedefH / A;
+    g.strokeStyle = "#fff"; g.lineWidth = 3; g.beginPath(); g.arc(cx, cy, 12, 0, 7); g.stroke(); g.lineWidth = 1;
+  }
+  g.strokeStyle = "#d8e8f2"; g.strokeRect(x0, 10, hedefW, hedefH);
+  g.fillStyle = "#6f8ba3"; g.font = "12px system-ui";
+  g.fillText(`← sıra ${R}`, x0, H - 2); g.fillText("sıra 1 →", x0 + hedefW - 50, H - 2);
+  g.save(); g.translate(x0 - 6, 10 + hedefH); g.rotate(-Math.PI / 2); g.fillText("adım 1 →", 0, 0); g.restore();
+}
+
+function baslikGuncelle() {
+  const son = siralar[siralar.length - 1];
+  document.getElementById("vAdim").innerHTML = `ADIM ${son.length}/${S.adimSayisi}<span>S:${siralar.length}</span>`;
+  const d = document.getElementById("vDeger");
+  d.textContent = sonDeger >= 0 ? sonDeger : "---";
+  d.style.color = sonDeger >= 0 ? renk(sonDeger) : "";
+  document.getElementById("vCekim").textContent = "Ç#" + cekimNo;
+  document.getElementById("dot").classList.toggle("on", bagli || !!demoTimer);
+}
+function butonlar() {
+  document.getElementById("bAdim").textContent = "ADIM: " + S.adimSayisi;
+  document.getElementById("bZik").textContent = S.zikzak ? "ZİKZAK" : "PARALEL";
+  document.getElementById("bSkala").textContent = "SKALA: " + ({ sabit: "SABİT", oto: "OTO", fark: "FARK" }[S.skala] || "SABİT");
+  document.getElementById("aFiltre").textContent = S.filtre ? "AÇIK" : "KAPALI";
+  document.getElementById("bGorunum").textContent = "GÖR: " + (S.uc ? "3D" : S.gtrGorunum ? "GTR" : "IZGARA");
+  document.getElementById("uc3d").style.display = S.uc ? "flex" : "none";
+  document.getElementById("bSes").textContent = "SES: " + (S.ses ? "AÇIK" : "KAPALI");
+  document.getElementById("aTik").textContent = S.tik ? "AÇIK" : "KAPALI";
+}
+let mesajT = null;
+function mesaj(t, c = "#3fd17a") {
+  const m = document.getElementById("mesaj");
+  m.textContent = t; m.style.color = c; m.style.borderColor = c; m.classList.add("goster");
+  clearTimeout(mesajT); mesajT = setTimeout(() => m.classList.remove("goster"), 2500);
+}
+
+// ======================= VERI =======================
+function temizle() {
+  secim = null;
+  siralar = [[]]; grafik = []; toplam = 0; sayi = 0; sonDeger = -1; bosVar = false; metalVar = false;
+  grafikCiz(); izgaraCiz(); baslikGuncelle();
+}
+function siraIlerle() { siralar.push([]); }
+
+function degerIsle(v) {
+  sonDeger = v; toplam += v; sayi++;
+  const son = siralar[siralar.length - 1];
+  son.push(v);
+  let siraBitti = false;
+  if (son.length >= S.adimSayisi) { siraIlerle(); siraBitti = true; }
+
+  let ozel = false;
+  if (v <= S.bosEsik && !bosVar) { bosVar = true; sesCal("bosluk", true); ozel = true; }
+  if (v > S.bosEsik + 15) bosVar = false;
+  if (v >= S.metEsik && !metalVar) { metalVar = true; sesCal("metal", true); ozel = true; }
+  if (v < S.metEsik - 20) metalVar = false;
+  if (!ozel) { if (siraBitti) sesCal("sira", true); else if (S.tik) sesCal("tik", false); }
+
+  grafik.push(v); if (grafik.length > GR_N) grafik.shift();
+  grafikCiz(); izgaraCiz(); baslikGuncelle();
+}
+
+// Satir -> patlama (burst) mantigi: ayni deger 150 ms icinde = tekrar, atla.
+// 120 ms yeni satir gelmezse patlama biter; icinde baslangic isareti varsa yeni cekim.
+let sonSatirDeger = -1, sonSatirMs = 0, patlama = [];
+function satirIsle(s) {
+  s = s.trim(); if (!s) return;
+  const v = parseInt(s, 10); if (isNaN(v)) return;
+  const t = performance.now();
+  if (v !== sonSatirDeger || t - sonSatirMs > 150) patlama.push(v);
+  sonSatirDeger = v; sonSatirMs = t;
+}
+function patlamaBosalt() {
+  if (!patlama.length) return;
+  let isaret = false;
+  for (let i = 0; i + 5 <= patlama.length; i++)
+    if (ISARET.every((x, k) => patlama[i + k] === x)) { isaret = true; break; }
+  if (isaret) {
+    cekimNo++; temizle(); sesCal("basla", true); mesaj(`ÇEKİM #${cekimNo} BAŞLADI`);
+  } else patlama.forEach(degerIsle);
+  patlama = [];
+}
+setInterval(() => { if (patlama.length && performance.now() - sonSatirMs > 120) patlamaBosalt(); }, 30);
+
+// ======================= BAGLANTI (Web Serial) =======================
+async function baglan() {
+  sesHazirla();
+  if (bagli || yenidenTimer) return kes();
+  if (!("serial" in navigator)) {
+    alert("Bu tarayıcı Web Serial desteklemiyor.\nAndroid'de Chrome (sürüm 137+) kullanın ve sayfayı https adresinden açın.");
+    return;
+  }
+  try {
+    // Android: Bluetooth SPP cihazlarinin listelenmesi icin SPP UUID filtresi
+    const SPP = "00001101-0000-1000-8000-00805f9b34fb";
+    try {
+      port = await navigator.serial.requestPort({ filters: [{ bluetoothServiceClassId: SPP }], allowedBluetoothServiceClassIds: [SPP] });
+    } catch (e1) {
+      if (e1 && e1.name === "NotFoundError") throw e1;   // kullanici iptal etti / cihaz yok
+      port = await navigator.serial.requestPort({ allowedBluetoothServiceClassIds: [SPP] });
+    }
+    await port.open({ baudRate: 9600 });
+  } catch (e) { mesaj("BAĞLANAMADI", "#e0555f"); console.log(e); return; }
+  bagli = true; kullaniciKesti = false; ekranAcikTut();
+  document.getElementById("bBaglan").textContent = "KES";
+  baslikGuncelle(); mesaj("BAĞLANDI · MAVİ TUŞA BAS");
+  okuDongu();
+}
+// Otomatik yeniden baglanma: ayni porta sormadan tekrar baglanir, cekim verisi silinmez
+let kullaniciKesti = false, yenidenTimer = null, yenidenSay = 0;
+function yenidenBaslat() {
+  if (yenidenTimer || kullaniciKesti || !port) return;
+  yenidenSay = 0;
+  document.getElementById("bBaglan").textContent = "DURDUR";
+  yenidenTimer = setInterval(yenidenDene, 3000);
+  yenidenDene();
+}
+function yenidenDurdur() { clearInterval(yenidenTimer); yenidenTimer = null; }
+async function yenidenDene() {
+  if (kullaniciKesti || bagli) { yenidenDurdur(); return; }
+  yenidenSay++;
+  mesaj(`YENİDEN BAĞLANIYOR... (${yenidenSay})`, "#ffe14a");
+  try {
+    try { await port.close(); } catch (e) {}
+    await port.open({ baudRate: 9600 });
+    yenidenDurdur();
+    bagli = true; ekranAcikTut();
+    document.getElementById("bBaglan").textContent = "KES";
+    baslikGuncelle(); mesaj("TEKRAR BAĞLANDI · ÇEKİM DEVAM");
+    sesCal("basla", true);
+    okuDongu();
+  } catch (e) { console.log("yeniden baglanma", e); }
+}
+async function okuDongu() {
+  const dec = new TextDecoder(); let tampon = "";
+  try {
+    okuyucu = port.readable.getReader();
+    while (true) {
+      const { value, done } = await okuyucu.read();
+      if (done) break;
+      tampon += dec.decode(value, { stream: true });
+      let i;
+      while ((i = tampon.indexOf("\n")) >= 0) { satirIsle(tampon.slice(0, i)); tampon = tampon.slice(i + 1); }
+    }
+  } catch (e) { console.log("okuma bitti", e); }
+  try { okuyucu && okuyucu.releaseLock(); } catch (e) {}
+  try { await port.close(); } catch (e) {}
+  const kopma = bagli && !kullaniciKesti;
+  bagli = false;
+  document.getElementById("bBaglan").textContent = "BAĞLAN";
+  baslikGuncelle();
+  if (kopma) { mesaj("BAĞLANTI KOPTU", "#e0555f"); sesCal("sira", true); setTimeout(yenidenBaslat, 800); }
+}
+async function kes() {
+  kullaniciKesti = true; yenidenDurdur();
+  bagli = false;
+  try { okuyucu && await okuyucu.cancel(); } catch (e) {}
+  document.getElementById("bBaglan").textContent = "BAĞLAN"; baslikGuncelle();
+}
+
+// ======================= DEMO (cihazsiz test) =======================
+function demo() {
+  sesHazirla();
+  if (demoTimer) { clearInterval(demoTimer); demoTimer = null; document.getElementById("aDemo").textContent = "DEMO BAŞLAT"; baslikGuncelle(); return; }
+  ekranAcikTut();
+  document.getElementById("aDemo").textContent = "DEMO DURDUR";
+  // isaret
+  [18,18,18,229,229,229,149,149,149,64,64,64,218,218,218].forEach(v => satirIsle(String(v)));
+  let v = 120, n = 0;
+  demoTimer = setInterval(() => {
+    n++;
+    v += (Math.random() - 0.5) * 50;
+    if (Math.random() < 0.03) v = 0;
+    if (Math.random() < 0.03) v = 255;
+    v = Math.max(0, Math.min(255, v));
+    const x = Math.round(v);
+    for (let k = 0; k < 4; k++) satirIsle(String(x));
+    if (x === 0 || x === 255) v = 120;
+  }, 550);
+  baslikGuncelle();
+}
+
+// ======================= KAYDET (CSV) =======================
+function kaydet() {
+  let csv = "sira,adim,ekran_sutun,deger\n";
+  siralar.forEach((sira, r) => sira.forEach((v, a) => { csv += `${r + 1},${a + 1},${sutun(r, a) + 1},${v}\n`; }));
+  const d = new Date(), z = n => String(n).padStart(2, "0");
+  const ad = `gladiator_cekim${cekimNo}_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}.csv`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = ad; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  mesaj("KAYDEDİLDİ: " + ad);
+}
+
+// ======================= 3D GORUNUM =======================
+// Yukseklik = sinyal degeri (derinlik degil). Sira 1 sagda, adim 1 one dogru.
+const U3 = { yaw: -0.25, pitch: 0.95, zoom: 1, abart: 1 };
+function ucCiz(g, W, H, A, R) {
+  duzen = null;
+  if (R < 2 || A < 2) {
+    g.fillStyle = "#6f8ba3"; g.font = "18px system-ui"; g.textAlign = "center";
+    g.fillText("3D için en az 2 sıra × 2 adım gerekli", W / 2, H / 2); g.textAlign = "left"; return;
+  }
+  // fiziksel matris
+  const Z = []; for (let r = 0; r < R; r++) { const row = []; for (let a = 0; a < A; a++) { const v = fizDeger(r, a); row.push(v === undefined ? null : v); } Z.push(row); }
+  // basamakli yuzey: her sira tam genislikte duz bir basamak, siralar arasi dik gecis (GTR gibi);
+  // adimlar boyunca yumusak gecis
+  const f = Math.max(3, Math.min(8, Math.floor(64 / Math.max(R, A))));
+  const NX = R * f + 1, NY = A * f + 1;
+  const kenar = t => Math.max(0, Math.min(1, (t - 0.42) / 0.16));       // sira gecisi: dar ve dik
+  const deger = (i, j) => {
+    const x = Math.max(0, Math.min(R - 1, -0.5 + i * R / (NX - 1)));
+    const y = Math.max(0, Math.min(A - 1, -0.5 + j * A / (NY - 1)));
+    const x0 = Math.min(R - 2, Math.floor(x)), y0 = Math.min(A - 2, Math.floor(y));
+    const tx = kenar(x - x0), ty = y - y0;
+    const q = [Z[x0][y0], Z[x0 + 1][y0], Z[x0][y0 + 1], Z[x0 + 1][y0 + 1]];
+    if (q.some(v => v === null)) return null;
+    return (q[0] * (1 - tx) + q[1] * tx) * (1 - ty) + (q[2] * (1 - tx) + q[3] * tx) * ty;
+  };
+  // olcek: gercek oranlar (sira / adim araligi)
+  const gx = R * S.siraCm, gy = A * S.adimCm, m = Math.max(gx, gy);
+  const sx = Math.max(0.55, gx / m), sy = Math.max(0.55, gy / m), hz = 0.45 * U3.abart;   // dar cekimler serit gibi gorunmesin
+  const P = [];   // nokta: [x,y,z,v]
+  for (let i = 0; i < NX; i++) { P.push([]); for (let j = 0; j < NY; j++) {
+    const v = deger(i, j);
+    P[i].push(v === null ? null : [sx * (0.5 - i / (NX - 1)) * 2, sy * (j / (NY - 1) - 0.5) * 2, (v / 255) * hz * 2, v]);
+  } }
+  const cy = Math.cos(U3.yaw), sy2 = Math.sin(U3.yaw), cp = Math.cos(U3.pitch), sp = Math.sin(U3.pitch);
+  const olc = Math.min(W, H) * 0.42 * U3.zoom, kam = 4.5;
+  const proj = (x, y, z) => {
+    z -= hz;                                   // yuksekligi ortala
+    const x1 = x * cy - y * sy2, y1 = x * sy2 + y * cy;
+    const y2 = y1 * cp - z * sp, z2 = y1 * sp + z * cp;   // y2: derinlik (kameraya uzaklik)
+    const k = kam / (kam + y2);
+    return [W / 2 + x1 * olc * k, H / 2 - z2 * olc * k, y2];
+  };
+  const isik = [0.4, -0.5, 0.75], il = Math.hypot(...isik);
+  const yuz = [];
+  for (let i = 0; i < NX - 1; i++) for (let j = 0; j < NY - 1; j++) {
+    const a = P[i][j], b = P[i + 1][j], c = P[i + 1][j + 1], d = P[i][j + 1];
+    if (!a || !b || !c || !d) continue;
+    const pa = proj(...a), pb = proj(...b), pc = proj(...c), pd = proj(...d);
+    // normal ve golge
+    const ux = c[0] - a[0], uy = c[1] - a[1], uz = c[2] - a[2], vx = d[0] - b[0], vy = d[1] - b[1], vz = d[2] - b[2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const nl = Math.hypot(nx, ny, nz) || 1;
+    const lam = Math.abs((nx * isik[0] + ny * isik[1] + nz * isik[2]) / (nl * il));
+    yuz.push({ p: [pa, pb, pc, pd], z: (pa[2] + pb[2] + pc[2] + pd[2]) / 4, v: (a[3] + b[3] + c[3] + d[3]) / 4, l: 0.45 + 0.55 * lam });
+  }
+  yuz.sort((p, q) => q.z - p.z);
+  g.fillStyle = "#0a1220"; g.fillRect(0, 0, W, H);
+  // taban cercevesi
+  const k0 = [proj(sx, -sy, 0), proj(-sx, -sy, 0), proj(-sx, sy, 0), proj(sx, sy, 0)];
+  g.strokeStyle = "#1e3a52"; g.beginPath(); k0.forEach((p, n) => n ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])); g.closePath(); g.stroke();
+  for (const y of yuz) {
+    const c = renkDizi(y.v).map(x => Math.round(x * y.l));
+    g.fillStyle = g.strokeStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+    g.beginPath(); y.p.forEach((p, n) => n ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])); g.closePath(); g.fill(); g.stroke();
+  }
+  g.fillStyle = "#d8e8f2"; g.font = "13px system-ui";
+  // dort kose etiketi (GTR gorunumu ile ayni yon: sira 1 sagda, adim 1 onde)
+  const kose = [[sx, -sy, `S1·A1`], [-sx, -sy, `S${R}·A1`], [sx, sy, `S1·A${A}`], [-sx, sy, `S${R}·A${A}`]];
+  for (const [x, y, t] of kose) { const p = proj(x * 1.1, y * 1.1, 0); g.fillText(t, p[0] - 16, p[1] + 4); }
+  g.fillStyle = "#6f8ba3"; g.font = "12px system-ui";
+  g.fillText("Yükseklik = sinyal değeri (derinlik değil) · tek parmak: döndür · iki parmak: yakınlaştır", 8, H - 8);
+}
+// 3D dokunma: tek parmak dondurur, iki parmak yakinlastirir
+const dokunlar = new Map(); let pinchIlk = 0, zoomIlk = 1;
+cI.addEventListener("pointerdown", e => { if (!S.uc) return; cI.setPointerCapture(e.pointerId); dokunlar.set(e.pointerId, [e.clientX, e.clientY]);
+  if (dokunlar.size === 2) { const [p, q] = [...dokunlar.values()]; pinchIlk = Math.hypot(p[0] - q[0], p[1] - q[1]); zoomIlk = U3.zoom; } });
+cI.addEventListener("pointermove", e => {
+  if (!S.uc || !dokunlar.has(e.pointerId)) return;
+  const eski = dokunlar.get(e.pointerId); dokunlar.set(e.pointerId, [e.clientX, e.clientY]);
+  if (dokunlar.size === 1) {
+    U3.yaw += (e.clientX - eski[0]) * 0.01;
+    U3.pitch = Math.max(0.1, Math.min(1.5, U3.pitch + (e.clientY - eski[1]) * 0.01));
+  } else if (dokunlar.size === 2 && pinchIlk) {
+    const [p, q] = [...dokunlar.values()];
+    U3.zoom = Math.max(0.4, Math.min(4, zoomIlk * Math.hypot(p[0] - q[0], p[1] - q[1]) / pinchIlk));
+  }
+  izgaraCiz();
+});
+const birak = e => { dokunlar.delete(e.pointerId); if (dokunlar.size < 2) pinchIlk = 0; };
+cI.addEventListener("pointerup", birak); cI.addEventListener("pointercancel", birak);
+cI.addEventListener("wheel", e => { if (!S.uc) return; e.preventDefault(); U3.zoom = Math.max(0.4, Math.min(4, U3.zoom * (e.deltaY < 0 ? 1.1 : 0.9))); izgaraCiz(); }, { passive: false });
+
+// ======================= DERINLIK TAHMINI =======================
+// Fiziksel konumdaki deger: sira r, ekran sutunu c (sicramalar temizlenmis - 3D ve derinlik icin)
+function fizDeger(r, c) {
+  const sira = temizSir[r] || siralar[r]; if (!sira) return undefined;
+  const a = (S.zikzak && r % 2 === 1) ? (S.adimSayisi - 1 - c) : c;
+  return sira[a];
+}
+// Ham deger (dosyaya kaydederken - veri degistirilmez)
+function fizHam(r, c) {
+  const sira = siralar[r]; if (!sira) return undefined;
+  const a = (S.zikzak && r % 2 === 1) ? (S.adimSayisi - 1 - c) : c;
+  return sira[a];
+}
+function medyan(a) { const b = a.filter(v => v !== undefined).sort((x, y) => x - y); if (!b.length) return 0; const m = b.length >> 1; return b.length % 2 ? b[m] : (b[m - 1] + b[m]) / 2; }
+
+// Yarim genislik: dizi, secilen indeks, adim (m)
+function yariGenislik(dizi, i, adimM) {
+  const sonuc = { dizi, i, adimM };
+  const tanimli = dizi.filter(v => v !== undefined).length;
+  if (tanimli < 3 || dizi[i] === undefined) return Object.assign(sonuc, { durum: "az" });
+  const taban = medyan(dizi), sapma = dizi[i] - taban;
+  Object.assign(sonuc, { taban, sapma });
+  if (Math.abs(sapma) < 8) return Object.assign(sonuc, { durum: "zayif" });
+  const yari = taban + sapma / 2, isaret = Math.sign(sapma);
+  const ustte = v => v !== undefined && isaret * (v - yari) > 0;
+  // tepe noktasini bul (secilen hucrenin cevresindeki en uc deger)
+  let t = i;
+  while (dizi[t - 1] !== undefined && isaret * (dizi[t - 1] - dizi[t]) > 0) t--;
+  while (dizi[t + 1] !== undefined && isaret * (dizi[t + 1] - dizi[t]) > 0) t++;
+  let j = t, kenarSol = false, kenarSag = false, sol, sag;
+  while (ustte(dizi[j - 1])) j--;
+  if (dizi[j - 1] === undefined) { sol = j - 0.5; kenarSol = true; }
+  else sol = j - (dizi[j] - yari) / (dizi[j] - dizi[j - 1]);
+  let k = t;
+  while (ustte(dizi[k + 1])) k++;
+  if (dizi[k + 1] === undefined) { sag = k + 0.5; kenarSag = true; }
+  else sag = k + (dizi[k] - yari) / (dizi[k] - dizi[k + 1]);
+  const fwhmAdim = sag - sol, fwhm = fwhmAdim * adimM;
+  const doyma = dizi.slice(j, k + 1).some(v => v >= 255 || v <= 0);
+  Object.assign(sonuc, { durum: "tamam", tepe: t, yari, sol, sag, fwhmAdim, fwhm, kenar: kenarSol || kenarSag, doyma });
+  if (fwhmAdim < 1) sonuc.durum = (kenarSol || kenarSag) ? "kenar" : "sig";
+  sonuc.zAlt = Math.max(0, 0.5 * fwhm - adimM * 0.25);
+  sonuc.zUst = 0.65 * fwhm + adimM * 0.35;
+  sonuc.zOrta = (sonuc.zAlt + sonuc.zUst) / 2;
+  return sonuc;
+}
+// 1 m altinda cm, ustunde m
+function m(x) { return x < 1 ? Math.round(x * 100) + " cm" : x.toFixed(2).replace(".", ",") + " m"; }
+function aralik(orta, alt, ust) {
+  if (ust < 1) return `≈ <b>${Math.round(orta * 100)} cm</b> (${Math.round(alt * 100)} – ${Math.round(ust * 100)} cm)`;
+  const f = x => x.toFixed(2).replace(".", ",");
+  return `≈ <b>${f(orta)} m</b> (${f(alt)} – ${f(ust)} m)`;
+}
+function yorum(s, ad) {
+  if (s.durum === "az") return `${ad}: yeterli veri yok.`;
+  if (s.durum === "zayif") return `${ad}: belirgin anomali yok (sapma ${Math.round(s.sapma)}).`;
+  if (s.durum === "kenar") return `${ad}: anomali kenarda, ölçülemedi (çekimi genişletin).`;
+  if (s.durum === "sig") return `${ad}: çok sığ (< ${m(s.adimM)}), tek adımdan dar.`;
+  let t = `${ad}: anomali genişliği ${m(s.fwhm)} → derinlik ${aralik(s.zOrta, s.zAlt, s.zUst)}`;
+  if (s.kenar) t += " · anomali sıra kenarına taştı, gerçek derinlik daha fazla olabilir";
+  if (s.doyma) t += " · değer sınırda (0/255), tepe düzleştiği için tahmin derin çıkabilir";
+  return t;
+}
+function derinlikAnaliz(r, c) {
+  const A = S.adimSayisi;
+  const R = siralar.filter(s => s.length).length;
+  if (fizDeger(r, c) === undefined) return;
+  secim = { r, c }; izgaraCiz();
+  const satir = []; for (let k = 0; k < A; k++) satir.push(fizDeger(r, k));
+  const sutunD = []; for (let k = 0; k < R; k++) sutunD.push(fizDeger(k, c));
+  const s1 = yariGenislik(satir, c, S.adimCm / 100);
+  const s2 = R >= 3 ? yariGenislik(sutunD, r, S.siraCm / 100) : { durum: "az" };
+  const gecerli = [s1, s2].filter(s => s.durum === "tamam");
+  let ana;
+  if (gecerli.length === 2) ana = aralik((s1.zOrta + s2.zOrta) / 2, Math.min(s1.zAlt, s2.zAlt), Math.max(s1.zUst, s2.zUst));
+  else if (gecerli.length === 1) ana = aralik(gecerli[0].zOrta, gecerli[0].zAlt, gecerli[0].zUst);
+  else if (s1.durum === "sig" || s2.durum === "sig") ana = "Çok sığ";
+  else ana = "Belirgin anomali yok";
+  const v = fizDeger(r, c);
+  document.getElementById("derinSonuc").innerHTML = `Sıra ${r + 1}, adım ${c + 1} · değer ${v} · Tahmini derinlik: ${ana}`;
+  document.getElementById("derinDetay").innerHTML =
+    "• " + yorum(s1, "Sıra boyunca (adım " + S.adimCm + " cm)") + "<br>• " + yorum(s2, "Sıralar arası (" + S.siraCm + " cm)") +
+    "<br>• Kalın çizgi: zemin (medyan) · kesikli: yarı yükseklik · sarı: anomali genişliği";
+  document.getElementById("mDerin").classList.add("acik");
+  requestAnimationFrame(() => profilCiz([s1, s2]));
+}
+function profilCiz(liste) {
+  const c = document.getElementById("cProfil"), g = c.getContext("2d");
+  const r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  c.width = r.width * d; c.height = r.height * d; g.setTransform(d, 0, 0, d, 0, 0);
+  const W = r.width, H = r.height;
+  g.fillStyle = "#0a1220"; g.fillRect(0, 0, W, H);
+  const gosterilecek = liste.filter(s => s.dizi && s.dizi.length);
+  const yh = H / Math.max(1, gosterilecek.length);
+  gosterilecek.forEach((s, n) => {
+    const y0 = n * yh, pad = 18, N = s.dizi.length;
+    const tan = s.dizi.filter(v => v !== undefined);
+    let lo = Math.min(...tan), hi = Math.max(...tan); const ek = Math.max(8, (hi - lo) * 0.15); lo = Math.max(0, lo - ek); hi = Math.min(255, hi + ek);
+    const X = i => 30 + (i + .5) * (W - 40) / N, Y = v => y0 + yh - pad - ((v - lo) / (hi - lo)) * (yh - 2 * pad);
+    g.fillStyle = "#6f8ba3"; g.font = "11px system-ui"; g.fillText(Math.round(hi), 2, y0 + pad + 4); g.fillText(Math.round(lo), 2, y0 + yh - pad);
+    g.fillStyle = "#6f8ba3"; g.font = "12px system-ui";
+    g.fillText(n === 0 ? "Sıra boyunca" : "Sıralar arası", 34, y0 + 14);
+    g.strokeStyle = "#1e3a52"; g.strokeRect(30, y0 + pad / 2, W - 40, yh - pad);
+    if (s.durum === "tamam" || s.durum === "sig") {
+      g.fillStyle = "rgba(255,225,74,.18)";
+      g.fillRect(X(s.sol), y0 + pad / 2, (s.sag - s.sol) * (W - 40) / N, yh - pad);
+    }
+    if (s.taban !== undefined) {
+      g.strokeStyle = "#3fd17a"; g.lineWidth = 2; g.beginPath(); g.moveTo(30, Y(s.taban)); g.lineTo(W - 10, Y(s.taban)); g.stroke();
+      if (s.yari !== undefined) { g.setLineDash([6, 5]); g.strokeStyle = "#ffe14a"; g.beginPath(); g.moveTo(30, Y(s.yari)); g.lineTo(W - 10, Y(s.yari)); g.stroke(); g.setLineDash([]); }
+    }
+    g.lineWidth = 3;
+    for (let i = 1; i < N; i++) {
+      if (s.dizi[i - 1] === undefined || s.dizi[i] === undefined) continue;
+      g.strokeStyle = renk(s.dizi[i]); g.beginPath(); g.moveTo(X(i - 1), Y(s.dizi[i - 1])); g.lineTo(X(i), Y(s.dizi[i])); g.stroke();
+    }
+    for (let i = 0; i < N; i++) if (s.dizi[i] !== undefined) { g.fillStyle = i === s.i ? "#fff" : renk(s.dizi[i]); g.beginPath(); g.arc(X(i), Y(s.dizi[i]), i === s.i ? 6 : 3, 0, 7); g.fill(); }
+    g.lineWidth = 1;
+  });
+}
+// Izgaraya dokununca hucreyi bul
+cI.addEventListener("pointerup", e => {
+  if (S.uc || !duzen) return;
+  const b = cI.getBoundingClientRect(), x = e.clientX - b.left, y = e.clientY - b.top;
+  let r, c;
+  if (duzen.mod === "izgara") {
+    r = duzen.bas + Math.floor(y / duzen.ch); c = Math.floor(x / duzen.cw);
+  } else {
+    if (x < duzen.x0 || x > duzen.x0 + duzen.w || y < duzen.y0 || y > duzen.y0 + duzen.h) return;
+    r = duzen.R - 1 - Math.floor((x - duzen.x0) / duzen.w * duzen.R); c = duzen.A - 1 - Math.floor((y - duzen.y0) / duzen.h * duzen.A);
+  }
+  if (c < 0 || c >= S.adimSayisi || r < 0 || r >= siralar.length) return;
+  derinlikAnaliz(r, c);
+});
+
+// ======================= G3D (GTR uyumlu dosya) =======================
+// Bicim (cozuldu): 4411 baytlik baslik + 36 baytlik kayitlar: float32 x9 = [deger, x, y, 0,0,0,0,0,0]
+// x = sira*4 + (0..3) (her sira 4 kez yazilir), y = adim. Baslikta 173: zikzak (1/0), 175: int32 adim sayisi.
+// Baslik sablonu kullanicinin kendi .g3d dosyasindan alinir ve sadece bu tarayicida saklanir.
+const G3D_BASLIK = 4411;
+function b64(u8) { let s = ""; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+function unb64(t) { const s = atob(t), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
+function sablonAl() { try { const t = localStorage.getItem("g3d_sablon"); return t ? unb64(t) : null; } catch (e) { return null; } }
+
+function g3dKaydet() {
+  const sablon = sablonAl();
+  if (!sablon) { alert("G3D kaydetmek için önce bir kez GTR programının kaydettiği herhangi bir .g3d dosyasını 'DOSYA AÇ' ile açın.\nBaşlık şablonu oradan alınır (sadece bu tablette saklanır)."); return; }
+  const A = S.adimSayisi, tam = siralar.filter(s => s.length === A), R = tam.length;
+  if (!R) { mesaj("KAYDEDİLECEK TAM SIRA YOK", "#e0555f"); return; }
+  const buf = new ArrayBuffer(G3D_BASLIK + R * 4 * A * 36), u8 = new Uint8Array(buf), dv = new DataView(buf);
+  u8.set(sablon.subarray(0, G3D_BASLIK));
+  dv.setUint8(173, S.zikzak ? 1 : 0);
+  dv.setInt32(175, A, true);
+  let p = G3D_BASLIK;
+  for (let x = 0; x < R * 4; x++) {
+    const r = x >> 2;
+    for (let k = 0; k < A; k++) {
+      const yy = (S.zikzak && x % 2 === 1) ? (A - 1 - k) : k;
+      dv.setFloat32(p, fizHam(r, yy), true); dv.setFloat32(p + 4, x, true); dv.setFloat32(p + 8, yy, true);
+      p += 36;
+    }
+  }
+  const d = new Date(), z = n => String(n).padStart(2, "0");
+  const ad = `gladiator_cekim${cekimNo}_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}.g3d`;
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([buf], { type: "application/octet-stream" }));
+  a.download = ad; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  mesaj("G3D KAYDEDİLDİ: " + R + " sıra × " + A + " adım");
+}
+
+// CSV: kendi kaydettigimiz bicim "sira,adim,ekran_sutun,deger" (ekran_sutun = fiziksel konum)
+// ya da sade "sira,adim,deger". Siralar fiziksel konumdan, gecerli zikzak ayarina gore kurulur.
+function csvAc(dosya) {
+  const fr = new FileReader();
+  fr.onload = () => {
+    const satirlar = String(fr.result).split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    if (!satirlar.length) { alert("CSV boş."); return; }
+    const bas = satirlar[0].toLowerCase().split(/[;,\t]/).map(x => x.trim());
+    const baslikVar = isNaN(parseFloat(bas[0]));
+    const iS = baslikVar ? bas.indexOf("sira") : 0, iA = baslikVar ? bas.indexOf("adim") : 1;
+    const iC = baslikVar ? bas.indexOf("ekran_sutun") : -1;
+    const iV = baslikVar ? bas.indexOf("deger") : (bas.length >= 4 ? 3 : 2);
+    if (iS < 0 || iA < 0 || iV < 0) { alert("CSV sütunları tanınmadı.\nBeklenen: sira, adim, deger (ve varsa ekran_sutun)."); return; }
+    const kayit = [];
+    let R = 0, A = 0;
+    for (const sat of satirlar.slice(baslikVar ? 1 : 0)) {
+      const p = sat.split(/[;,\t]/);
+      const r = parseInt(p[iS], 10) - 1, a = parseInt(p[iA], 10) - 1, v = parseFloat(p[iV]);
+      const c = iC >= 0 ? parseInt(p[iC], 10) - 1 : a;
+      if (!(r >= 0 && a >= 0 && c >= 0 && v >= 0 && v <= 255)) continue;
+      kayit.push([r, c, Math.round(v)]); R = Math.max(R, r + 1); A = Math.max(A, a + 1, c + 1);
+    }
+    if (!kayit.length) { alert("CSV'de okunabilir veri yok."); return; }
+    A = Math.min(A, 500);
+    S.adimSayisi = A; ayarKaydet(); butonlar();
+    temizle();
+    const fizMat = Array.from({ length: R }, () => new Array(A).fill(undefined));
+    for (const [r, c, v] of kayit) if (c < A) fizMat[r][c] = v;
+    siralar = [];
+    for (let r = 0; r < R; r++) {
+      const gelis = [];
+      for (let k = 0; k < A; k++) { const c = (S.zikzak && r % 2 === 1) ? (A - 1 - k) : k; if (fizMat[r][c] === undefined) break; gelis.push(fizMat[r][c]); }
+      siralar.push(gelis);
+    }
+    if (siralar[siralar.length - 1].length >= A) siralar.push([]);
+    siralar.flat().forEach(v => { toplam += v; sayi++; grafik.push(v); });
+    if (grafik.length > GR_N) grafik = grafik.slice(-GR_N);
+    sonDeger = -1;
+    grafikCiz(); izgaraCiz(); baslikGuncelle();
+    mesaj(`CSV AÇILDI: ${R} sıra × ${A} adım`);
+  };
+  fr.readAsText(dosya);
+}
+
+function g3dAc(dosya) {
+  const fr = new FileReader();
+  fr.onload = () => {
+    const u8 = new Uint8Array(fr.result), dv = new DataView(fr.result);
+    const imza = String.fromCharCode(...u8.subarray(1, 6));
+    if (imza !== "FSF.2" || u8.length < G3D_BASLIK + 36) { alert("Bu dosya tanınan bir GTR .g3d dosyası değil."); return; }
+    try { localStorage.setItem("g3d_sablon", b64(u8.subarray(0, G3D_BASLIK))); } catch (e) {}
+    // Noktalari oku. GTR'de enterpolasyon acikken kaydedilen dosyalarda koordinatlar
+    // yarim adimli olur (0, 0.5, 1.5 ...): bu durumda asil adim noktalari aradeger ile geri bulunur.
+    const n = Math.floor((u8.length - G3D_BASLIK) / 36);
+    const nok = new Map(), xsK = new Set(), ysK = new Set(); let maxX = 0, maxY = 0, kesirli = false;
+    for (let i = 0; i < n; i++) {
+      const p = G3D_BASLIK + i * 36;
+      const v = dv.getFloat32(p, true), x = dv.getFloat32(p + 4, true), y = dv.getFloat32(p + 8, true);
+      if (!(v >= 0 && v <= 255) || !(x >= 0 && x <= 4000) || !(y >= 0 && y <= 500)) continue;
+      if (x !== Math.round(x) || y !== Math.round(y)) kesirli = true;
+      nok.set(x + "," + y, v); xsK.add(x); ysK.add(y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+    }
+    const xs = [...xsK].sort((a, b) => a - b), ys = [...ysK].sort((a, b) => a - b);
+    const komsu = (dizi, t) => {             // t'yi saran iki deger ve agirlik
+      let i = 0; while (i < dizi.length - 2 && dizi[i + 1] < t) i++;
+      const a = dizi[i], b = dizi[Math.min(i + 1, dizi.length - 1)];
+      return [a, b, b > a ? Math.max(0, Math.min(1, (t - a) / (b - a))) : 0];
+    };
+    const oku = (X, Y) => {
+      if (!kesirli) return nok.get(X + "," + Y);
+      const [x1, x2, tx] = komsu(xs, X), [y1, y2, ty] = komsu(ys, Y);
+      const q = [nok.get(x1 + "," + y1), nok.get(x2 + "," + y1), nok.get(x1 + "," + y2), nok.get(x2 + "," + y2)];
+      if (q.some(v => v === undefined)) return nok.get(x1 + "," + y1);
+      return (q[0] * (1 - tx) + q[1] * tx) * (1 - ty) + (q[2] * (1 - tx) + q[3] * tx) * ty;
+    };
+    let A = dv.getInt32(175, true); if (!(A > 0 && A <= 500)) A = Math.round(maxY) + 1;
+    const R = Math.floor(maxX / 4) + 1;
+    const dosyaZik = u8[173] === 1;           // GTR'nin kayittaki tarama ayari
+    S.adimSayisi = Math.min(A, 500); S.zikzak = dosyaZik; ayarKaydet(); butonlar();
+    temizle();
+    siralar = [];
+    for (let r = 0; r < R; r++) {
+      const fiz = []; for (let k = 0; k < A; k++) fiz.push(oku(r * 4, k));
+      const gelis = (dosyaZik && r % 2 === 1) ? fiz.slice().reverse() : fiz;
+      siralar.push(gelis.map(v => v === undefined ? 0 : Math.round(v)));
+    }
+    siralar.push([]);
+    siralar.flat().forEach(v => { toplam += v; sayi++; grafik.push(v); });
+    if (grafik.length > GR_N) grafik = grafik.slice(-GR_N);
+    sonDeger = -1;
+    grafikCiz(); izgaraCiz(); baslikGuncelle();
+    mesaj(`AÇILDI: ${R}×${A} · ${dosyaZik ? "ZİKZAK" : "PARALEL"}${kesirli ? " · enterpolasyon geri çevrildi" : ""}`);
+  };
+  fr.readAsArrayBuffer(dosya);
+}
+
+// ======================= ADIM TUS TAKIMI =======================
+let tusDeger = "";
+function tusTakimiAc() {
+  tusDeger = String(S.adimSayisi); document.getElementById("tusEkran").textContent = tusDeger;
+  document.getElementById("mAdim").classList.add("acik");
+}
+(function tusOlustur() {
+  const t = document.getElementById("tuslar");
+  ["1","2","3","4","5","6","7","8","9","SİL","0","TAMAM"].forEach(k => {
+    const b = document.createElement("button"); b.className = "btn" + (k === "TAMAM" ? " ana" : ""); b.textContent = k;
+    if (k === "SİL" || k === "TAMAM") b.style.fontSize = "18px";
+    b.onclick = () => {
+      if (k === "SİL") tusDeger = tusDeger.slice(0, -1);
+      else if (k === "TAMAM") {
+        const n = parseInt(tusDeger, 10);
+        if (n >= 2 && n <= 120) {
+          S.adimSayisi = n; ayarKaydet(); butonlar();
+          siralar = [[]]; toplam = 0; sayi = 0; izgaraCiz(); baslikGuncelle();
+          document.getElementById("mAdim").classList.remove("acik");
+        } else { document.getElementById("tusEkran").textContent = "2–120 arası"; tusDeger = ""; return; }
+        return;
+      } else if (tusDeger.length < 3) tusDeger = (tusDeger === "0" ? "" : tusDeger) + k;
+      document.getElementById("tusEkran").textContent = tusDeger || "_";
+    };
+    t.appendChild(b);
+  });
+  document.getElementById("mAdim").onclick = e => { if (e.target.id === "mAdim") e.target.classList.remove("acik"); };
+})();
+
+// ======================= BUTONLAR =======================
+const $ = id => document.getElementById(id);
+$("bBaglan").onclick = baglan;
+$("bTemizle").onclick = () => { sesHazirla(); temizle(); };
+$("bSira").onclick = () => {
+  sesHazirla();
+  if (siralar[siralar.length - 1].length > 0) { siraIlerle(); sesCal("sira", true); izgaraCiz(); baslikGuncelle(); }
+};
+$("bAdim").onclick = tusTakimiAc;
+$("bZik").onclick = () => { S.zikzak = !S.zikzak; ayarKaydet(); butonlar(); izgaraCiz(); };
+// SABIT -> OTO -> FARK -> SABIT
+$("bSkala").onclick = () => { S.skala = { sabit: "oto", oto: "fark", fark: "sabit" }[S.skala] || "sabit"; ayarKaydet(); butonlar(); izgaraCiz(); grafikCiz(); };
+$("aFiltre").onclick = () => { S.filtre = !S.filtre; ayarKaydet(); butonlar(); izgaraCiz(); grafikCiz(); };
+// IZGARA -> GTR -> 3D -> IZGARA
+$("bGorunum").onclick = () => {
+  if (S.uc) { S.uc = false; S.gtrGorunum = false; }
+  else if (S.gtrGorunum) { S.uc = true; }
+  else { S.gtrGorunum = true; }
+  ayarKaydet(); butonlar(); izgaraCiz(); grafikCiz();
+};
+$("u3Az").onclick = () => { U3.abart = Math.max(0.2, U3.abart / 1.3); izgaraCiz(); };
+$("u3Cok").onclick = () => { U3.abart = Math.min(5, U3.abart * 1.3); izgaraCiz(); };
+$("u3Sifir").onclick = () => { U3.yaw = -0.25; U3.pitch = 0.95; U3.zoom = 1; U3.abart = 1; izgaraCiz(); };
+$("bSes").onclick = () => { sesHazirla(); S.ses = !S.ses; ayarKaydet(); butonlar(); if (S.ses) sesCal("tik", false); };
+$("bKaydet").onclick = kaydet;
+$("bG3d").onclick = g3dKaydet;
+$("bAc").onclick = () => $("dosyaSec").click();
+$("dosyaSec").onchange = e => { const f = e.target.files[0]; if (f) { if (/\.csv$/i.test(f.name)) csvAc(f); else g3dAc(f); } e.target.value = ""; };
+$("dKapat").onclick = () => $("mDerin").classList.remove("acik");
+$("mDerin").onclick = e => { if (e.target.id === "mDerin") e.target.classList.remove("acik"); };
+$("bAyar").onclick = () => { $("aBos").value = S.bosEsik; $("aMet").value = S.metEsik; $("aAdimCm").value = S.adimCm; $("aSiraCm").value = S.siraCm; $("aFark").value = S.farkAralik; $("mAyar").classList.add("acik"); };
+$("aTik").onclick = () => { S.tik = !S.tik; butonlar(); };
+$("aDemo").onclick = demo;
+$("aTamam").onclick = () => {
+  const b = parseInt($("aBos").value, 10), m = parseInt($("aMet").value, 10);
+  if (!isNaN(b)) S.bosEsik = Math.max(0, Math.min(100, b));
+  if (!isNaN(m)) S.metEsik = Math.max(150, Math.min(255, m));
+  const ac = parseInt($("aAdimCm").value, 10), sc = parseInt($("aSiraCm").value, 10);
+  if (ac >= 5 && ac <= 300) S.adimCm = ac;
+  if (sc >= 5 && sc <= 300) S.siraCm = sc;
+  const fa = parseInt($("aFark").value, 10);
+  if (fa >= 3 && fa <= 120) S.farkAralik = fa;
+  ayarKaydet(); $("mAyar").classList.remove("acik"); grafikCiz(); izgaraCiz();
+};
+$("mAyar").onclick = e => { if (e.target.id === "mAyar") e.target.classList.remove("acik"); };
+
+butonlar(); hepsiniBoyutla(); baslikGuncelle();
+
+// ======================= INTERNETSIZ CALISMA (PWA) =======================
+// sw.js sayfayi tablete kaydeder; internet yokken de acilir.
+(function cevrimdisiHazirla() {
+  const yaz = (t, c) => { const e = document.getElementById("cevrimdisi"); e.textContent = t; e.style.color = c; };
+  if (!("serviceWorker" in navigator)) { yaz("desteklenmiyor", "#e0555f"); return; }
+  navigator.serviceWorker.register("sw.js")
+    .then(() => navigator.serviceWorker.ready)
+    .then(() => yaz("HAZIR ✓ (sayfa tablete kaydedildi)", "#3fd17a"))
+    .catch(e => { yaz("HATA: " + e.message, "#e0555f"); console.log(e); });
+})();
+</script>
+</body>
+</html>
